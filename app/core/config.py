@@ -95,7 +95,11 @@ class Settings(BaseSettings):
     YOUTUBE_API_KEY: str | None = None
 
     # --- Access control ----------------------------------------------------
-    ADMIN_API_KEY: str = Field(..., description="Shared secret for all write routes")
+    # Per-tenant write credentials live in the ``tenants`` table; this key only
+    # gates tenant management (creating an artist, rotating their keys).
+    SUPER_ADMIN_KEY: str = Field(
+        ..., description="Global secret for tenant management routes only"
+    )
     CORS_ORIGINS: CSVList = []
 
     @computed_field  # type: ignore[prop-decorator]
@@ -130,7 +134,8 @@ class Settings(BaseSettings):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def email_enabled(self) -> bool:
-        return bool(self.SMTP_HOST and self.ENQUIRY_NOTIFY_EMAIL)
+        """Whether SMTP can send at all. The recipient is resolved per tenant."""
+        return bool(self.SMTP_HOST)
 
 
 @lru_cache

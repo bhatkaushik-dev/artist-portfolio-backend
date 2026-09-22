@@ -11,10 +11,11 @@ import uuid
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 
-from app.api.deps import AdminDep, SessionDep, client_ip
+from app.api.deps import SessionDep, TenantAdminDep, TenantDep, client_ip
 from app.core.config import settings
 from app.models.enquiry import Enquiry
 from app.models.enums import EnquiryStatus
+from app.models.site_profile import SiteProfile
 from app.schemas.enquiry import (
     EnquiryCreate,
     EnquiryCreateResponse,
@@ -38,8 +39,10 @@ async def create_enquiry(
     request: Request,
     background_tasks: BackgroundTasks,
     session: SessionDep,
+    tenant: TenantDep,
 ) -> EnquiryCreateResponse:
     enquiry = Enquiry(
+        tenant_id=tenant.id,
         name=payload.name,
         email=str(payload.email),
         phone=payload.phone,
@@ -60,6 +63,11 @@ async def create_enquiry(
     if settings.email_enabled:
         background_tasks.add_task(notify_new_enquiry, enquiry.id)
 
+    # The artist's own number, so each tenant's leads reach the right phone.
+    profile_phone = await session.scalar(
+        select(SiteProfile.phone).where(SiteProfile.tenant_id == tenant.id)
+    )
+
     return EnquiryCreateResponse(
         id=enquiry.id,
         status="persisted",
@@ -67,6 +75,7 @@ async def create_enquiry(
             name=payload.name,
             subject=payload.subject,
             message=payload.message,
+            phone=profile_phone,
         ),
         notification_queued=settings.email_enabled,
     )
@@ -75,11 +84,11 @@ async def create_enquiry(
 @router.get(
     "",
     response_model=EnquiryListResponse,
-    dependencies=[AdminDep],
     summary="Admin: list leads, newest first",
 )
 async def list_enquiries(
     session: SessionDep,
+    tenant: TenantAdminDep,
     status_filter: EnquiryStatus | None = Query(
         None, alias="status", description="Filter by lead status"
     ),
@@ -87,7 +96,7 @@ async def list_enquiries(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> EnquiryListResponse:
-    filters = []
+    filters = [Enquiry.tenant_id == tenant.id]
     if status_filter is not None:
         filters.append(Enquiry.status == status_filter)
     if source is not None:
@@ -115,13 +124,19 @@ async def list_enquiries(
 @router.patch(
     "/{enquiry_id}",
     response_model=EnquiryRead,
-    dependencies=[AdminDep],
     summary="Admin: update lead status or notes",
 )
 async def update_enquiry(
-    enquiry_id: uuid.UUID, payload: EnquiryStatusUpdate, session: SessionDep
+    enquiry_id: uuid.UUID,
+    payload: EnquiryStatusUpdate,
+    session: SessionDep,
+    tenant: TenantAdminDep,
 ) -> Enquiry:
-    enquiry = await session.get(Enquiry, enquiry_id)
+    enquiry = await session.scalar(
+        select(Enquiry).where(
+            Enquiry.id == enquiry_id, Enquiry.tenant_id == tenant.id
+        )
+    )
     if enquiry is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Enquiry not found"

@@ -14,11 +14,12 @@ from email.message import EmailMessage
 from urllib.parse import quote
 
 import anyio.to_thread
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from app.core.config import settings
 from app.db.session import SessionFactory
 from app.models.enquiry import Enquiry
+from app.models.site_profile import SiteProfile
 
 logger = logging.getLogger(__name__)
 
@@ -50,11 +51,11 @@ def build_whatsapp_url(
     return f"https://wa.me/{digits}?text={encoded}"
 
 
-def _render_email(enquiry: Enquiry) -> EmailMessage:
+def _render_email(enquiry: Enquiry, recipient: str) -> EmailMessage:
     msg = EmailMessage()
     msg["Subject"] = f"[Portfolio] New enquiry from {enquiry.name}"
     msg["From"] = settings.SMTP_FROM or settings.SMTP_USERNAME or "noreply@localhost"
-    msg["To"] = settings.ENQUIRY_NOTIFY_EMAIL or ""
+    msg["To"] = recipient
     # Replying from the inbox should reach the enquirer, not the SMTP account.
     msg["Reply-To"] = enquiry.email
 
@@ -115,7 +116,17 @@ async def notify_new_enquiry(enquiry_id: uuid.UUID) -> None:
             logger.warning("Enquiry %s vanished before notification", enquiry_id)
             return
 
-        message = _render_email(enquiry)
+        # Each artist gets their own leads; the env var is only a fallback for
+        # a tenant whose profile has no contact address yet.
+        recipient = await session.scalar(
+            select(SiteProfile.email).where(SiteProfile.tenant_id == enquiry.tenant_id)
+        )
+        recipient = recipient or settings.ENQUIRY_NOTIFY_EMAIL
+        if not recipient:
+            logger.warning("No notification address for enquiry %s", enquiry_id)
+            return
+
+        message = _render_email(enquiry, recipient)
         error: str | None = None
         try:
             await anyio.to_thread.run_sync(_send_sync, message)

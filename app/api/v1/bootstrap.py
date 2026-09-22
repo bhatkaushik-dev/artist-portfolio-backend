@@ -8,6 +8,7 @@ endpoint runs on every revalidation and on every cold build.
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections import defaultdict
 from datetime import UTC, datetime
 
@@ -15,11 +16,12 @@ from fastapi import APIRouter, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import TenantDep
 from app.db.session import SessionFactory
 from app.models.faq import FAQ
 from app.models.page_content import PageContent
 from app.models.photo import Photo
-from app.models.site_profile import SITE_PROFILE_ID, SiteProfile
+from app.models.site_profile import SiteProfile
 from app.models.video import Video
 from app.schemas.bootstrap import BootstrapResponse
 from app.schemas.faq import FAQRead
@@ -31,38 +33,40 @@ from app.schemas.video import VideoRead
 router = APIRouter(tags=["bootstrap"])
 
 
-async def _in_session(runner):
+async def _in_session(runner, tenant_id: uuid.UUID):
     """Run one query in its own session (concurrent use of one is unsafe)."""
     async with SessionFactory() as session:
-        return await runner(session)
+        return await runner(session, tenant_id)
 
 
-async def _load_site(session: AsyncSession) -> SiteProfile | None:
-    return await session.get(SiteProfile, SITE_PROFILE_ID)
+async def _load_site(session: AsyncSession, tenant_id: uuid.UUID) -> SiteProfile | None:
+    return await session.scalar(
+        select(SiteProfile).where(SiteProfile.tenant_id == tenant_id)
+    )
 
 
-async def _load_pages(session: AsyncSession) -> list[PageContent]:
+async def _load_pages(session: AsyncSession, tenant_id: uuid.UUID) -> list[PageContent]:
     result = await session.execute(
         select(PageContent)
-        .where(PageContent.is_published.is_(True))
+        .where(PageContent.tenant_id == tenant_id, PageContent.is_published.is_(True))
         .order_by(PageContent.slug)
     )
     return list(result.scalars())
 
 
-async def _load_photos(session: AsyncSession) -> list[Photo]:
+async def _load_photos(session: AsyncSession, tenant_id: uuid.UUID) -> list[Photo]:
     result = await session.execute(
         select(Photo)
-        .where(Photo.is_active.is_(True))
+        .where(Photo.tenant_id == tenant_id, Photo.is_active.is_(True))
         .order_by(Photo.role, Photo.sort_order, Photo.created_at)
     )
     return list(result.scalars())
 
 
-async def _load_videos(session: AsyncSession) -> list[Video]:
+async def _load_videos(session: AsyncSession, tenant_id: uuid.UUID) -> list[Video]:
     result = await session.execute(
         select(Video)
-        .where(Video.is_active.is_(True))
+        .where(Video.tenant_id == tenant_id, Video.is_active.is_(True))
         .order_by(
             Video.featured.desc(), Video.sort_order, Video.upload_date.desc().nullslast()
         )
@@ -70,9 +74,11 @@ async def _load_videos(session: AsyncSession) -> list[Video]:
     return list(result.scalars())
 
 
-async def _load_faqs(session: AsyncSession) -> list[FAQ]:
+async def _load_faqs(session: AsyncSession, tenant_id: uuid.UUID) -> list[FAQ]:
     result = await session.execute(
-        select(FAQ).where(FAQ.is_active.is_(True)).order_by(FAQ.sort_order, FAQ.created_at)
+        select(FAQ)
+        .where(FAQ.tenant_id == tenant_id, FAQ.is_active.is_(True))
+        .order_by(FAQ.sort_order, FAQ.created_at)
     )
     return list(result.scalars())
 
@@ -82,19 +88,22 @@ async def _load_faqs(session: AsyncSession) -> list[FAQ]:
     response_model=BootstrapResponse,
     summary="Everything the frontend needs, in one payload",
 )
-async def bootstrap(response: Response) -> BootstrapResponse:
+async def bootstrap(response: Response, tenant: TenantDep) -> BootstrapResponse:
     site, pages, photos, videos, faqs = await asyncio.gather(
-        _in_session(_load_site),
-        _in_session(_load_pages),
-        _in_session(_load_photos),
-        _in_session(_load_videos),
-        _in_session(_load_faqs),
+        _in_session(_load_site, tenant.id),
+        _in_session(_load_pages, tenant.id),
+        _in_session(_load_photos, tenant.id),
+        _in_session(_load_videos, tenant.id),
+        _in_session(_load_faqs, tenant.id),
     )
 
     if site is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Site profile has not been initialised. Run `python seed.py`.",
+            detail=(
+                "Site profile has not been initialised. "
+                f"Run `python seed.py --tenant {tenant.slug}`."
+            ),
         )
 
     photo_models = [PhotoRead.model_validate(p) for p in photos]

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Index, Integer, String, Text
+import uuid
+
+from sqlalchemy import Boolean, ForeignKey, Index, Integer, String, Text
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -11,6 +14,13 @@ from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 class FAQ(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "faqs"
     __table_args__ = (Index("ix_faqs_active_sort_order", "is_active", "sort_order"),)
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
 
     question: Mapped[str] = mapped_column(String(320), nullable=False)
     answer: Mapped[str] = mapped_column(Text, nullable=False)

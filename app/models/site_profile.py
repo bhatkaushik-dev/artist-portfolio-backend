@@ -1,26 +1,29 @@
-"""Singleton row backing ``/api/site`` and the Person/LocalBusiness JSON-LD."""
+"""Per-tenant row backing ``/api/site`` and the Person/LocalBusiness JSON-LD."""
 
 from __future__ import annotations
 
-from sqlalchemy import CheckConstraint, Float, Integer, String, Text
-from sqlalchemy.dialects.postgresql import JSONB
+import uuid
+
+from sqlalchemy import Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin
 
-# The profile is a singleton: one row, pinned at id == 1.
-SITE_PROFILE_ID = 1
-
 
 class SiteProfile(Base, TimestampMixin):
-    """One row only — enforced by a CHECK constraint on the primary key."""
+    """Exactly one row per tenant — enforced by the unique constraint."""
 
     __tablename__ = "site_profile"
-    __table_args__ = (
-        CheckConstraint(f"id = {SITE_PROFILE_ID}", name="singleton"),
-    )
+    __table_args__ = (UniqueConstraint("tenant_id", name="uq_site_profile_tenant_id"),)
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=SITE_PROFILE_ID)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
 
     # --- Identity ----------------------------------------------------------
     name: Mapped[str] = mapped_column(String(160), nullable=False)

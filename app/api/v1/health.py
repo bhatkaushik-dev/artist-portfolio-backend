@@ -16,7 +16,7 @@ from sqlalchemy import select, text
 
 from app.api.deps import SessionDep
 from app.core.config import settings
-from app.models.site_profile import SITE_PROFILE_ID, SiteProfile
+from app.models.site_profile import SiteProfile
 from app.schemas.bootstrap import HealthResponse
 
 logger = logging.getLogger(__name__)
@@ -43,12 +43,12 @@ async def health(response: Response, session: SessionDep) -> HealthResponse:
         # SELECT 1 keeps the compute instance warm; the site_profile read also
         # confirms the schema is actually migrated and reachable.
         await session.execute(text("SELECT 1"))
-        profile_name = await session.scalar(
-            select(SiteProfile.name).where(SiteProfile.id == SITE_PROFILE_ID)
-        )
+        # Any tenant's profile proves the schema is migrated and readable; the
+        # probe stays tenant-agnostic so uptime checks need no key.
+        profile_name = await session.scalar(select(SiteProfile.name).limit(1))
         database = "up"
         if profile_name is None:
-            detail = "Database reachable but site_profile is empty; run seed.py"
+            detail = "Database reachable but no site profile exists; run seed.py"
     except Exception as exc:
         detail = f"{type(exc).__name__}: {exc}"
         logger.exception("Health check database query failed")

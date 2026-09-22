@@ -6,16 +6,21 @@ import uuid
 
 from fastapi import APIRouter, HTTPException, Query, Response, status
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import AdminDep, SessionDep
+from app.api.deps import SessionDep, TenantAdminDep, TenantDep
 from app.models.faq import FAQ
+from app.models.tenant import Tenant
 from app.schemas.faq import FAQCreate, FAQRead, FAQUpdate
 
 router = APIRouter(prefix="/faqs", tags=["faqs"])
 
 
-async def _get_faq(session: SessionDep, faq_id: uuid.UUID) -> FAQ:
-    faq = await session.get(FAQ, faq_id)
+async def _get_faq(session: AsyncSession, tenant: Tenant, faq_id: uuid.UUID) -> FAQ:
+    """Scope the lookup by tenant so a guessed id from another tenant 404s."""
+    faq = await session.scalar(
+        select(FAQ).where(FAQ.id == faq_id, FAQ.tenant_id == tenant.id)
+    )
     if faq is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="FAQ not found")
     return faq
@@ -24,10 +29,11 @@ async def _get_faq(session: SessionDep, faq_id: uuid.UUID) -> FAQ:
 @router.get("", response_model=list[FAQRead], summary="Ordered FAQ list")
 async def list_faqs(
     session: SessionDep,
+    tenant: TenantDep,
     page_slug: str | None = Query(None, description="Scope to one page"),
     include_inactive: bool = Query(False),
 ) -> list[FAQ]:
-    stmt = select(FAQ)
+    stmt = select(FAQ).where(FAQ.tenant_id == tenant.id)
     if page_slug is not None:
         stmt = stmt.where(FAQ.page_slug == page_slug)
     if not include_inactive:
@@ -41,12 +47,13 @@ async def list_faqs(
     "",
     response_model=FAQRead,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[AdminDep],
     summary="Create an FAQ entry",
 )
-async def create_faq(payload: FAQCreate, session: SessionDep) -> FAQ:
+async def create_faq(
+    payload: FAQCreate, session: SessionDep, tenant: TenantAdminDep
+) -> FAQ:
     data = payload.model_dump()
-    faq = FAQ(sort_order=data.pop("order"), **data)
+    faq = FAQ(tenant_id=tenant.id, sort_order=data.pop("order"), **data)
     session.add(faq)
     await session.commit()
     await session.refresh(faq)
@@ -56,13 +63,15 @@ async def create_faq(payload: FAQCreate, session: SessionDep) -> FAQ:
 @router.put(
     "/{faq_id}",
     response_model=FAQRead,
-    dependencies=[AdminDep],
     summary="Update an FAQ entry",
 )
 async def update_faq(
-    faq_id: uuid.UUID, payload: FAQUpdate, session: SessionDep
+    faq_id: uuid.UUID,
+    payload: FAQUpdate,
+    session: SessionDep,
+    tenant: TenantAdminDep,
 ) -> FAQ:
-    faq = await _get_faq(session, faq_id)
+    faq = await _get_faq(session, tenant, faq_id)
 
     updates = payload.model_dump(exclude_unset=True)
     if "order" in updates:
@@ -81,10 +90,11 @@ async def update_faq(
     response_model=None,
     # A 204 must not carry a body, so the default JSONResponse cannot be used.
     response_class=Response,
-    dependencies=[AdminDep],
     summary="Delete an FAQ entry",
 )
-async def delete_faq(faq_id: uuid.UUID, session: SessionDep) -> None:
-    faq = await _get_faq(session, faq_id)
+async def delete_faq(
+    faq_id: uuid.UUID, session: SessionDep, tenant: TenantAdminDep
+) -> None:
+    faq = await _get_faq(session, tenant, faq_id)
     await session.delete(faq)
     await session.commit()

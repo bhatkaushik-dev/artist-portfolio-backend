@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Boolean, CheckConstraint, Index, Integer, String
+import uuid
+
+from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Index, Integer, String
 from sqlalchemy import Enum as SAEnum
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -22,6 +25,13 @@ class Photo(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __table_args__ = (
         CheckConstraint("width > 0 AND height > 0", name="positive_dimensions"),
         Index("ix_photos_role_sort_order", "role", "sort_order"),
+    )
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
 
     role: Mapped[PhotoRole] = mapped_column(

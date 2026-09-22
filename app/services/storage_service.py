@@ -270,6 +270,7 @@ class SupabaseStorage:
         self,
         raw: bytes,
         *,
+        tenant_slug: str,
         role: str,
         alt: str,
     ) -> StoredImage:
@@ -281,7 +282,8 @@ class SupabaseStorage:
         processed = await transcode(raw)
 
         stem = _slugify(alt)
-        folder = f"{role}/{datetime.now(tz=UTC):%Y/%m}"
+        # Tenant segment first: one shared bucket, no cross-artist collisions.
+        folder = f"{tenant_slug}/{role}/{datetime.now(tz=UTC):%Y/%m}"
         unique = uuid.uuid4().hex[:12]
         webp_path = f"{folder}/{stem}-{unique}.webp"
         jpeg_path = f"{folder}/{stem}-{unique}.jpg"

@@ -1,12 +1,15 @@
-"""Seed the database with realistic initial artist data.
+"""Seed one tenant's content.
 
-Idempotent: re-running updates the singleton and upserts content by its natural
-key (page slug, YouTube id, FAQ question) rather than duplicating rows.
+Idempotent: re-running updates that tenant's profile and upserts content by its
+natural key (page slug, YouTube id, FAQ question) rather than duplicating rows.
+Every lookup is scoped to the tenant, so seeding artist B never overwrites A.
 
-    python seed.py                 # schema + content
-    python seed.py --reset         # DROP and recreate every table first
-    python seed.py --with-photos   # also push ./seed_assets/* through the
-                                   # real Pillow + Supabase upload pipeline
+    python seed.py                        # the only tenant, if there is one
+    python seed.py --tenant kaushik-bhat  # pick one explicitly
+    python seed.py --list-tenants         # show available slugs
+    python seed.py --reset                # DROP and recreate every table first
+    python seed.py --with-photos          # also push ./seed_assets/* through
+                                          # the Pillow + Supabase pipeline
 
 Photos are only seeded from real files, because ``width``/``height`` must come
 from the image bytes — inventing them would defeat the whole pipeline.
@@ -24,9 +27,8 @@ from sqlalchemy import select
 
 from app.db.base import Base
 from app.db.session import SessionFactory, dispose_engine, engine
-from app.models import FAQ, PageContent, Photo, SiteProfile, Video
+from app.models import FAQ, PageContent, Photo, SiteProfile, Tenant, Video
 from app.models.enums import PhotoRole
-from app.models.site_profile import SITE_PROFILE_ID
 from app.services.storage_service import storage_service
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)-8s %(message)s")
@@ -450,10 +452,12 @@ FAQS: list[dict] = [
 # ---------------------------------------------------------------------------
 
 
-async def seed_site_profile(session) -> None:
-    profile = await session.get(SiteProfile, SITE_PROFILE_ID)
+async def seed_site_profile(session, tenant: Tenant) -> None:
+    profile = await session.scalar(
+        select(SiteProfile).where(SiteProfile.tenant_id == tenant.id)
+    )
     if profile is None:
-        profile = SiteProfile(id=SITE_PROFILE_ID, **SITE_PROFILE)
+        profile = SiteProfile(tenant_id=tenant.id, **SITE_PROFILE)
         session.add(profile)
         logger.info("Created site profile: %s", SITE_PROFILE["name"])
     else:
@@ -462,13 +466,16 @@ async def seed_site_profile(session) -> None:
         logger.info("Updated site profile: %s", SITE_PROFILE["name"])
 
 
-async def seed_pages(session) -> None:
+async def seed_pages(session, tenant: Tenant) -> None:
     for data in PAGES:
         existing = await session.scalar(
-            select(PageContent).where(PageContent.slug == data["slug"])
+            select(PageContent).where(
+                PageContent.tenant_id == tenant.id,
+                PageContent.slug == data["slug"],
+            )
         )
         if existing is None:
-            session.add(PageContent(**data))
+            session.add(PageContent(tenant_id=tenant.id, **data))
             logger.info("Created page: /%s", data["slug"])
         else:
             for field, value in data.items():
@@ -476,14 +483,17 @@ async def seed_pages(session) -> None:
             logger.info("Updated page: /%s", data["slug"])
 
 
-async def seed_videos(session) -> None:
+async def seed_videos(session, tenant: Tenant) -> None:
     for data in VIDEOS:
         existing = await session.scalar(
-            select(Video).where(Video.youtube_id == data["youtube_id"])
+            select(Video).where(
+                Video.tenant_id == tenant.id,
+                Video.youtube_id == data["youtube_id"],
+            )
         )
         thumbnail = f"https://i.ytimg.com/vi/{data['youtube_id']}/maxresdefault.jpg"
         if existing is None:
-            session.add(Video(thumbnail_url=thumbnail, **data))
+            session.add(Video(tenant_id=tenant.id, thumbnail_url=thumbnail, **data))
             logger.info("Created video: %s", data["title"][:60])
         else:
             for field, value in data.items():
@@ -491,13 +501,15 @@ async def seed_videos(session) -> None:
             logger.info("Updated video: %s", data["title"][:60])
 
 
-async def seed_faqs(session) -> None:
+async def seed_faqs(session, tenant: Tenant) -> None:
     for data in FAQS:
         existing = await session.scalar(
-            select(FAQ).where(FAQ.question == data["question"])
+            select(FAQ).where(
+                FAQ.tenant_id == tenant.id, FAQ.question == data["question"]
+            )
         )
         if existing is None:
-            session.add(FAQ(**data))
+            session.add(FAQ(tenant_id=tenant.id, **data))
             logger.info("Created FAQ: %s", data["question"][:60])
         else:
             for field, value in data.items():
@@ -505,7 +517,7 @@ async def seed_faqs(session) -> None:
             logger.info("Updated FAQ: %s", data["question"][:60])
 
 
-async def seed_photos(session) -> None:
+async def seed_photos(session, tenant: Tenant) -> None:
     """Push every image in ./seed_assets through the real upload pipeline.
 
     Role is taken from the filename prefix (``hero-``, ``about-``, ``classes-``);
@@ -541,19 +553,22 @@ async def seed_photos(session) -> None:
 
         alt = stem.replace("-", " ").replace("_", " ").strip().capitalize()
 
-        existing = await session.scalar(select(Photo).where(Photo.alt == alt))
+        existing = await session.scalar(
+            select(Photo).where(Photo.tenant_id == tenant.id, Photo.alt == alt)
+        )
         if existing is not None:
             logger.info("Photo already seeded, skipping: %s", alt)
             continue
 
         stored = await storage_service.process_and_store(
-            path.read_bytes(), role=role.value, alt=alt
+            path.read_bytes(), tenant_slug=tenant.slug, role=role.value, alt=alt
         )
         order = role_counters.get(role, 0)
         role_counters[role] = order + 1
 
         session.add(
             Photo(
+                tenant_id=tenant.id,
                 role=role,
                 src=stored.webp_url,
                 download_url=stored.jpeg_url,
@@ -582,7 +597,44 @@ async def seed_photos(session) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def run(*, reset: bool, with_photos: bool) -> None:
+async def resolve_tenant(session, slug: str | None) -> Tenant | None:
+    """Pick the tenant to seed, or explain why the choice is ambiguous."""
+    tenants = list((await session.execute(select(Tenant).order_by(Tenant.created_at))).scalars())
+
+    if not tenants:
+        logger.error("No tenants exist. Create one with POST /api/tenants first.")
+        return None
+
+    if slug is None:
+        if len(tenants) == 1:
+            return tenants[0]
+        logger.error(
+            "%d tenants exist — pass --tenant <slug>. Available: %s",
+            len(tenants),
+            ", ".join(t.slug for t in tenants),
+        )
+        return None
+
+    for tenant in tenants:
+        if tenant.slug == slug:
+            return tenant
+
+    logger.error(
+        "No tenant with slug %r. Available: %s", slug, ", ".join(t.slug for t in tenants)
+    )
+    return None
+
+
+async def list_tenants() -> None:
+    async with SessionFactory() as session:
+        rows = (await session.execute(select(Tenant).order_by(Tenant.created_at))).scalars()
+        for tenant in rows:
+            flag = "" if tenant.is_active else "  (inactive)"
+            logger.info("%-24s %s%s", tenant.slug, tenant.name, flag)
+    await dispose_engine()
+
+
+async def run(*, tenant_slug: str | None, reset: bool, with_photos: bool) -> None:
     async with engine.begin() as conn:
         if reset:
             logger.warning("Dropping all tables")
@@ -591,12 +643,18 @@ async def run(*, reset: bool, with_photos: bool) -> None:
     logger.info("Schema ready")
 
     async with SessionFactory() as session:
-        await seed_site_profile(session)
-        await seed_pages(session)
-        await seed_videos(session)
-        await seed_faqs(session)
+        tenant = await resolve_tenant(session, tenant_slug)
+        if tenant is None:
+            await dispose_engine()
+            return
+
+        logger.info("Seeding tenant: %s (%s)", tenant.name, tenant.slug)
+        await seed_site_profile(session, tenant)
+        await seed_pages(session, tenant)
+        await seed_videos(session, tenant)
+        await seed_faqs(session, tenant)
         if with_photos:
-            await seed_photos(session)
+            await seed_photos(session, tenant)
         await session.commit()
 
     await storage_service.shutdown()
@@ -606,6 +664,16 @@ async def run(*, reset: bool, with_photos: bool) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--tenant",
+        metavar="SLUG",
+        help="Which artist to seed. Optional while only one tenant exists.",
+    )
+    parser.add_argument(
+        "--list-tenants",
+        action="store_true",
+        help="Print every tenant slug and exit",
+    )
     parser.add_argument(
         "--reset",
         action="store_true",
@@ -618,13 +686,23 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.list_tenants:
+        asyncio.run(list_tenants())
+        return
+
     if args.reset:
-        confirm = input("This DROPS all portfolio tables. Type 'yes' to continue: ")
+        # --reset drops `tenants` too, taking every artist's keys with it.
+        confirm = input(
+            "This DROPS all tables, including tenants and their keys. "
+            "Type 'yes' to continue: "
+        )
         if confirm.strip().lower() != "yes":
             logger.info("Aborted")
             return
 
-    asyncio.run(run(reset=args.reset, with_photos=args.with_photos))
+    asyncio.run(
+        run(tenant_slug=args.tenant, reset=args.reset, with_photos=args.with_photos)
+    )
 
 
 if __name__ == "__main__":
