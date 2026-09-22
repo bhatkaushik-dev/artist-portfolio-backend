@@ -32,6 +32,12 @@ _admin_key_header = APIKeyHeader(
     auto_error=False,
     description="Per-tenant write secret, or the super-admin key on /tenants",
 )
+_tenant_slug_header = APIKeyHeader(
+    name="X-Tenant-Slug",
+    scheme_name="TenantSlug",
+    auto_error=False,
+    description="Target tenant, required only when writing with the super-admin key",
+)
 
 
 def _unauthorized(detail: str) -> HTTPException:
@@ -69,15 +75,39 @@ async def resolve_tenant(
 async def require_tenant_admin(
     session: SessionDep,
     api_key: Annotated[str | None, Depends(_admin_key_header)] = None,
+    tenant_slug: Annotated[str | None, Depends(_tenant_slug_header)] = None,
 ) -> Tenant:
     """Authenticate a write *and* resolve the tenant it applies to.
 
-    One header does both jobs, so an admin key is structurally incapable of
-    touching another tenant's rows — there is no separate tenant selector to
-    disagree with it.
+    For an artist's own key the header does both jobs, so that key is
+    structurally incapable of touching another tenant's rows — there is no
+    separate tenant selector to disagree with it.
+
+    The super-admin key is the one exception: it may name any tenant through
+    ``X-Tenant-Slug``. That grants it nothing new, because
+    ``POST /tenants/{id}/rotate-keys`` already lets it mint any artist's admin
+    key on demand. It only removes the need to destroy the artist's working
+    credential just to make one edit on their behalf.
     """
     if not api_key:
         raise _unauthorized("Missing X-Admin-Key header")
+
+    if secrets.compare_digest(api_key, settings.SUPER_ADMIN_KEY):
+        if not tenant_slug:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Writing with the super-admin key requires an X-Tenant-Slug "
+                    "header naming the tenant to act on"
+                ),
+            )
+        tenant = await _active_tenant_by(session, Tenant.slug, tenant_slug)
+        if tenant is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No active tenant with slug {tenant_slug!r}",
+            )
+        return tenant
 
     tenant = await _active_tenant_by(session, Tenant.admin_key, api_key)
     if tenant is None:
