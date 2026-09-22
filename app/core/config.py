@@ -102,6 +102,22 @@ class Settings(BaseSettings):
     )
     CORS_ORIGINS: CSVList = []
 
+    # --- Sign-in (Google) --------------------------------------------------
+    # Who Google says the caller is. The ID token is verified here against
+    # Google's public keys, so the admin panel is never trusted to vouch for it.
+    GOOGLE_CLIENT_ID: str | None = None
+    # Signs the session tokens this API issues after a successful sign-in.
+    # Separate from SUPER_ADMIN_KEY so rotating one does not invalidate the other.
+    JWT_SECRET: str | None = None
+    JWT_TTL_MINUTES: int = 60
+    # A token may be refreshed repeatedly, but never past this long after sign-in.
+    SESSION_MAX_HOURS: int = 12
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def google_signin_enabled(self) -> bool:
+        return bool(self.GOOGLE_CLIENT_ID and self.JWT_SECRET)
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def sqlalchemy_url(self) -> str:

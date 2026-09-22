@@ -12,6 +12,7 @@ from app.models.page_content import PageContent
 from app.models.photo import Photo
 from app.models.site_profile import SiteProfile
 from app.models.tenant import Tenant
+from app.models.user import User
 from app.models.video import Video
 
 __all__ = [
@@ -25,5 +26,6 @@ __all__ = [
     "PhotoRole",
     "SiteProfile",
     "Tenant",
+    "User",
     "Video",
 ]
