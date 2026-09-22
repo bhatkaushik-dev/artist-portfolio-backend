@@ -17,10 +17,12 @@ from fastapi import (
 )
 from pydantic import ValidationError
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import AdminDep, SessionDep
+from app.api.deps import SessionDep, TenantAdminDep, TenantDep
 from app.models.enums import PhotoRole
 from app.models.photo import Photo
+from app.models.tenant import Tenant
 from app.schemas.photo import PhotoOrderUpdate, PhotoRead, PhotoUpdate, PhotoUploadMeta
 from app.services.storage_service import (
     ImageProcessingError,
@@ -33,8 +35,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/photos", tags=["photos"])
 
 
-async def _get_photo(session: SessionDep, photo_id: uuid.UUID) -> Photo:
-    photo = await session.get(Photo, photo_id)
+async def _get_photo(
+    session: AsyncSession, tenant: Tenant, photo_id: uuid.UUID
+) -> Photo:
+    """Scope the lookup by tenant so a guessed id from another tenant 404s."""
+    photo = await session.scalar(
+        select(Photo).where(Photo.id == photo_id, Photo.tenant_id == tenant.id)
+    )
     if photo is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found"
@@ -45,10 +52,11 @@ async def _get_photo(session: SessionDep, photo_id: uuid.UUID) -> Photo:
 @router.get("", response_model=list[PhotoRead], summary="List photos, optionally by role")
 async def list_photos(
     session: SessionDep,
+    tenant: TenantDep,
     role: PhotoRole | None = Query(None, description="Filter by placement role"),
     include_inactive: bool = Query(False, description="Admin preview of hidden photos"),
 ) -> list[Photo]:
-    stmt = select(Photo)
+    stmt = select(Photo).where(Photo.tenant_id == tenant.id)
     if role is not None:
         stmt = stmt.where(Photo.role == role)
     if not include_inactive:
@@ -62,11 +70,11 @@ async def list_photos(
     "/upload",
     response_model=PhotoRead,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[AdminDep],
     summary="Upload an image; dimensions are derived, never supplied",
 )
 async def upload_photo(
     session: SessionDep,
+    tenant: TenantAdminDep,
     file: UploadFile = File(..., description="Source image (JPEG/PNG/WebP/HEIC/TIFF)"),
     alt: str = Form(..., description="Required for accessibility and ImageObject"),
     caption: str | None = Form(None),
@@ -94,7 +102,7 @@ async def upload_photo(
 
     try:
         stored = await storage_service.process_and_store(
-            raw, role=meta.role.value, alt=meta.alt
+            raw, tenant_slug=tenant.slug, role=meta.role.value, alt=meta.alt
         )
     except ImageProcessingError as exc:
         raise HTTPException(
@@ -111,7 +119,7 @@ async def upload_photo(
         # Append to the end of its role bucket.
         next_order = await session.scalar(
             select(func.coalesce(func.max(Photo.sort_order) + 1, 0)).where(
-                Photo.role == meta.role
+                Photo.tenant_id == tenant.id, Photo.role == meta.role
             )
         )
         sort_order = int(next_order or 0)
@@ -119,6 +127,7 @@ async def upload_photo(
         sort_order = meta.order
 
     photo = Photo(
+        tenant_id=tenant.id,
         role=meta.role,
         src=stored.webp_url,
         download_url=stored.jpeg_url,
@@ -149,26 +158,26 @@ async def upload_photo(
 @router.patch(
     "/{photo_id}/order",
     response_model=list[PhotoRead],
-    dependencies=[AdminDep],
     summary="Move a photo to a new position within its role",
 )
 async def reorder_photo(
     photo_id: uuid.UUID,
     payload: PhotoOrderUpdate,
     session: SessionDep,
+    tenant: TenantAdminDep,
 ) -> list[Photo]:
     """Reposition one photo and renumber its role bucket contiguously.
 
     Returns the whole bucket so the admin UI can re-render from the response
     instead of guessing the resulting order.
     """
-    photo = await _get_photo(session, photo_id)
+    photo = await _get_photo(session, tenant, photo_id)
 
     siblings = list(
         (
             await session.execute(
                 select(Photo)
-                .where(Photo.role == photo.role)
+                .where(Photo.tenant_id == tenant.id, Photo.role == photo.role)
                 .order_by(Photo.sort_order, Photo.created_at)
             )
         ).scalars()
@@ -188,15 +197,15 @@ async def reorder_photo(
 @router.patch(
     "/{photo_id}",
     response_model=PhotoRead,
-    dependencies=[AdminDep],
     summary="Update photo metadata (never dimensions)",
 )
 async def update_photo(
     photo_id: uuid.UUID,
     payload: PhotoUpdate,
     session: SessionDep,
+    tenant: TenantAdminDep,
 ) -> Photo:
-    photo = await _get_photo(session, photo_id)
+    photo = await _get_photo(session, tenant, photo_id)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(photo, field, value)
     await session.commit()
@@ -210,11 +219,12 @@ async def update_photo(
     response_model=None,
     # A 204 must not carry a body, so the default JSONResponse cannot be used.
     response_class=Response,
-    dependencies=[AdminDep],
     summary="Delete the storage objects and the row",
 )
-async def delete_photo(photo_id: uuid.UUID, session: SessionDep) -> None:
-    photo = await _get_photo(session, photo_id)
+async def delete_photo(
+    photo_id: uuid.UUID, session: SessionDep, tenant: TenantAdminDep
+) -> None:
+    photo = await _get_photo(session, tenant, photo_id)
     paths = [photo.storage_path_webp, photo.storage_path_jpeg]
 
     # Row first: a stale object in a public bucket is harmless, whereas a row

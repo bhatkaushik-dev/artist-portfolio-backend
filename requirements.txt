@@ -14,3 +14,7 @@ httpx==0.28.1
 supabase==2.11.0           # admin/CLI use; request path uses httpx directly
 python-multipart==0.0.20   # UploadFile / Form parsing
 anyio==4.7.0
+
+# --- Google sign-in ----------------------------------------------------------
+PyJWT==2.14.0              # issues our session tokens, verifies Google's
+cryptography==50.0.1       # RS256 support for PyJWT (Google signs with RS256)

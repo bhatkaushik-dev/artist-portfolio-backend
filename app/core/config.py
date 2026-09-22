@@ -95,8 +95,28 @@ class Settings(BaseSettings):
     YOUTUBE_API_KEY: str | None = None
 
     # --- Access control ----------------------------------------------------
-    ADMIN_API_KEY: str = Field(..., description="Shared secret for all write routes")
+    # Per-tenant write credentials live in the ``tenants`` table; this key only
+    # gates tenant management (creating an artist, rotating their keys).
+    SUPER_ADMIN_KEY: str = Field(
+        ..., description="Global secret for tenant management routes only"
+    )
     CORS_ORIGINS: CSVList = []
+
+    # --- Sign-in (Google) --------------------------------------------------
+    # Who Google says the caller is. The ID token is verified here against
+    # Google's public keys, so the admin panel is never trusted to vouch for it.
+    GOOGLE_CLIENT_ID: str | None = None
+    # Signs the session tokens this API issues after a successful sign-in.
+    # Separate from SUPER_ADMIN_KEY so rotating one does not invalidate the other.
+    JWT_SECRET: str | None = None
+    JWT_TTL_MINUTES: int = 60
+    # A token may be refreshed repeatedly, but never past this long after sign-in.
+    SESSION_MAX_HOURS: int = 12
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def google_signin_enabled(self) -> bool:
+        return bool(self.GOOGLE_CLIENT_ID and self.JWT_SECRET)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -130,7 +150,8 @@ class Settings(BaseSettings):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def email_enabled(self) -> bool:
-        return bool(self.SMTP_HOST and self.ENQUIRY_NOTIFY_EMAIL)
+        """Whether SMTP can send at all. The recipient is resolved per tenant."""
+        return bool(self.SMTP_HOST)
 
 
 @lru_cache

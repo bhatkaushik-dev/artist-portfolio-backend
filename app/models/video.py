@@ -2,9 +2,20 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Index, Integer, String, Text
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -12,11 +23,20 @@ from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 class Video(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "videos"
-    __table_args__ = (Index("ix_videos_featured_sort_order", "featured", "sort_order"),)
-
-    youtube_id: Mapped[str] = mapped_column(
-        String(24), nullable=False, unique=True, index=True
+    __table_args__ = (
+        Index("ix_videos_featured_sort_order", "featured", "sort_order"),
+        # Two artists may legitimately feature the same YouTube video.
+        UniqueConstraint("tenant_id", "youtube_id", name="uq_videos_tenant_id_youtube_id"),
     )
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    youtube_id: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
 
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)

@@ -8,8 +8,10 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, HTTPException, Query, Response, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import AdminDep, SessionDep
+from app.api.deps import SessionDep, TenantAdminDep, TenantDep
+from app.models.tenant import Tenant
 from app.models.video import Video
 from app.schemas.video import VideoCreate, VideoRead, VideoUpdate
 from app.services.youtube_service import fallback_thumbnail_url, fetch_metadata
@@ -17,8 +19,13 @@ from app.services.youtube_service import fallback_thumbnail_url, fetch_metadata
 router = APIRouter(prefix="/videos", tags=["videos"])
 
 
-async def _get_video(session: SessionDep, video_id: uuid.UUID) -> Video:
-    video = await session.get(Video, video_id)
+async def _get_video(
+    session: AsyncSession, tenant: Tenant, video_id: uuid.UUID
+) -> Video:
+    """Scope the lookup by tenant so a guessed id from another tenant 404s."""
+    video = await session.scalar(
+        select(Video).where(Video.id == video_id, Video.tenant_id == tenant.id)
+    )
     if video is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Video not found"
@@ -29,10 +36,11 @@ async def _get_video(session: SessionDep, video_id: uuid.UUID) -> Video:
 @router.get("", response_model=list[VideoRead], summary="Ordered video list")
 async def list_videos(
     session: SessionDep,
+    tenant: TenantDep,
     featured: bool | None = Query(None, description="Filter to featured videos only"),
     include_inactive: bool = Query(False),
 ) -> list[Video]:
-    stmt = select(Video)
+    stmt = select(Video).where(Video.tenant_id == tenant.id)
     if featured is not None:
         stmt = stmt.where(Video.featured.is_(featured))
     if not include_inactive:
@@ -49,12 +57,15 @@ async def list_videos(
     "",
     response_model=VideoRead,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[AdminDep],
     summary="Create a video by YouTube id, syncing metadata when possible",
 )
-async def create_video(payload: VideoCreate, session: SessionDep) -> Video:
+async def create_video(
+    payload: VideoCreate, session: SessionDep, tenant: TenantAdminDep
+) -> Video:
     existing = await session.scalar(
-        select(Video).where(Video.youtube_id == payload.youtube_id)
+        select(Video).where(
+            Video.tenant_id == tenant.id, Video.youtube_id == payload.youtube_id
+        )
     )
     if existing is not None:
         raise HTTPException(
@@ -75,6 +86,7 @@ async def create_video(payload: VideoCreate, session: SessionDep) -> Video:
         return default
 
     video = Video(
+        tenant_id=tenant.id,
         youtube_id=payload.youtube_id,
         title=pick(
             payload.title,
@@ -110,13 +122,15 @@ async def create_video(payload: VideoCreate, session: SessionDep) -> Video:
 @router.put(
     "/{video_id}",
     response_model=VideoRead,
-    dependencies=[AdminDep],
     summary="Update video fields",
 )
 async def update_video(
-    video_id: uuid.UUID, payload: VideoUpdate, session: SessionDep
+    video_id: uuid.UUID,
+    payload: VideoUpdate,
+    session: SessionDep,
+    tenant: TenantAdminDep,
 ) -> Video:
-    video = await _get_video(session, video_id)
+    video = await _get_video(session, tenant, video_id)
 
     updates = payload.model_dump(exclude_unset=True)
     if "order" in updates:
@@ -132,11 +146,12 @@ async def update_video(
 @router.post(
     "/{video_id}/sync",
     response_model=VideoRead,
-    dependencies=[AdminDep],
     summary="Re-pull metadata from the YouTube Data API",
 )
-async def sync_video(video_id: uuid.UUID, session: SessionDep) -> Video:
-    video = await _get_video(session, video_id)
+async def sync_video(
+    video_id: uuid.UUID, session: SessionDep, tenant: TenantAdminDep
+) -> Video:
+    video = await _get_video(session, tenant, video_id)
 
     synced = await fetch_metadata(video.youtube_id)
     if synced is None:
@@ -163,10 +178,11 @@ async def sync_video(video_id: uuid.UUID, session: SessionDep) -> Video:
     response_model=None,
     # A 204 must not carry a body, so the default JSONResponse cannot be used.
     response_class=Response,
-    dependencies=[AdminDep],
     summary="Remove a video",
 )
-async def delete_video(video_id: uuid.UUID, session: SessionDep) -> None:
-    video = await _get_video(session, video_id)
+async def delete_video(
+    video_id: uuid.UUID, session: SessionDep, tenant: TenantAdminDep
+) -> None:
+    video = await _get_video(session, tenant, video_id)
     await session.delete(video)
     await session.commit()

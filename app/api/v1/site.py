@@ -1,23 +1,31 @@
-"""``/api/site`` — the profile singleton."""
+"""``/api/site`` — one profile per tenant."""
 
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import AdminDep, SessionDep
-from app.models.site_profile import SITE_PROFILE_ID, SiteProfile
+from app.api.deps import SessionDep, TenantAdminDep, TenantDep
+from app.models.site_profile import SiteProfile
+from app.models.tenant import Tenant
 from app.schemas.site import SiteProfileRead, SiteProfileUpdate
 
 router = APIRouter(prefix="/site", tags=["site"])
 
 
-async def load_profile(session: SessionDep) -> SiteProfile:
-    """Fetch the singleton or fail with a directive error."""
-    profile = await session.get(SiteProfile, SITE_PROFILE_ID)
+async def load_profile(session: AsyncSession, tenant: Tenant) -> SiteProfile:
+    """Fetch this tenant's profile or fail with a directive error."""
+    profile = await session.scalar(
+        select(SiteProfile).where(SiteProfile.tenant_id == tenant.id)
+    )
     if profile is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Site profile has not been initialised. Run `python seed.py`.",
+            detail=(
+                "Site profile has not been initialised. "
+                f"Run `python seed.py --tenant {tenant.slug}`."
+            ),
         )
     return profile
 
@@ -27,18 +35,21 @@ async def load_profile(session: SessionDep) -> SiteProfile:
     response_model=SiteProfileRead,
     summary="Full profile and schema metadata",
 )
-async def get_site(session: SessionDep) -> SiteProfile:
-    return await load_profile(session)
+async def get_site(session: SessionDep, tenant: TenantDep) -> SiteProfile:
+    return await load_profile(session, tenant)
 
 
 @router.put(
     "",
     response_model=SiteProfileRead,
-    dependencies=[AdminDep],
-    summary="Update the profile singleton",
+    summary="Update the profile",
 )
-async def update_site(payload: SiteProfileUpdate, session: SessionDep) -> SiteProfile:
-    profile = await load_profile(session)
+async def update_site(
+    payload: SiteProfileUpdate,
+    session: SessionDep,
+    tenant: TenantAdminDep,
+) -> SiteProfile:
+    profile = await load_profile(session, tenant)
 
     # exclude_unset keeps PUT partial: an omitted key is "leave alone", not
     # "set to null". Callers clear a field by sending an explicit null.
