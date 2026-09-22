@@ -1,0 +1,21 @@
+.env
+.env.*
+!.env.example
+
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# Local images fed to `python seed.py --with-photos`
+seed_assets/
+
+.DS_Store
+Thumbs.db

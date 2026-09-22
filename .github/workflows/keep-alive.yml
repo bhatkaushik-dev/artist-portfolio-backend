@@ -1,0 +1,99 @@
+# Keeps the Supabase free-tier project out of its 7-day inactivity pause.
+#
+# GET /api/health runs a real SELECT against Postgres, so this ping counts as
+# database activity — an HTTP 200 from the app alone would not.
+#
+# Setup:
+#   1. Add a repository variable API_BASE_URL (Settings → Secrets and variables
+#      → Actions → Variables), e.g. https://portfolio-api.onrender.com
+#   2. Nothing else. No secret is needed: /api/health is public and read-only.
+#
+# NOTE: GitHub only runs workflows from .github/workflows at the *repository
+# root*. If this backend lives in a subdirectory of a larger repo, move this
+# file to <repo-root>/.github/workflows/keep-alive.yml.
+
+name: Supabase Keep-Alive
+
+on:
+  schedule:
+    # 02:17 UTC daily. An off-the-hour minute avoids GitHub's scheduling
+    # congestion at :00, which can delay a run by 15+ minutes.
+    - cron: "17 2 * * *"
+  workflow_dispatch: {}
+
+# Serialise runs so a manual dispatch never overlaps the scheduled one.
+concurrency:
+  group: keep-alive
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    name: Ping /api/health
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Resolve target
+        id: target
+        env:
+          API_BASE_URL: ${{ vars.API_BASE_URL }}
+        run: |
+          if [ -z "$API_BASE_URL" ]; then
+            echo "::error::Repository variable API_BASE_URL is not set."
+            exit 1
+          fi
+          # Strip any trailing slash so the path concatenation stays clean.
+          echo "url=${API_BASE_URL%/}/api/health" >> "$GITHUB_OUTPUT"
+
+      - name: Warm the database
+        env:
+          HEALTH_URL: ${{ steps.target.outputs.url }}
+        run: |
+          set -euo pipefail
+
+          # Free-tier hosts cold-start, and an unpaused Supabase instance can
+          # take several seconds on the first connection. Retry with backoff
+          # before declaring the service down.
+          attempts=5
+          delay=15
+
+          for i in $(seq 1 "$attempts"); do
+            echo "Attempt $i/$attempts → $HEALTH_URL"
+
+            http_code=$(curl \
+              --silent \
+              --show-error \
+              --location \
+              --max-time 60 \
+              --write-out '%{http_code}' \
+              --output response.json \
+              "$HEALTH_URL" || echo "000")
+
+            echo "HTTP $http_code"
+            if [ -s response.json ]; then
+              cat response.json
+              echo
+            fi
+
+            if [ "$http_code" = "200" ]; then
+              latency=$(grep -o '"db_latency_ms":[0-9.]*' response.json | cut -d: -f2 || true)
+              echo "::notice::Supabase reachable. DB latency: ${latency:-unknown} ms"
+              echo "### Keep-alive OK" >> "$GITHUB_STEP_SUMMARY"
+              echo "- Endpoint: \`$HEALTH_URL\`" >> "$GITHUB_STEP_SUMMARY"
+              echo "- DB latency: \`${latency:-unknown} ms\`" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+
+            if [ "$i" -lt "$attempts" ]; then
+              echo "Retrying in ${delay}s..."
+              sleep "$delay"
+              delay=$((delay * 2))
+            fi
+          done
+
+          echo "::error::Health check failed after $attempts attempts."
+          echo "### Keep-alive FAILED" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Endpoint: \`$HEALTH_URL\`" >> "$GITHUB_STEP_SUMMARY"
+          exit 1

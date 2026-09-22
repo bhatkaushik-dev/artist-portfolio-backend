@@ -1,0 +1,16 @@
+# Production dependencies, pinned.
+# Regenerate with: pip install -r requirements.txt && pip freeze
+
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+sqlalchemy==2.0.36
+asyncpg==0.30.0
+greenlet==3.1.1            # required by SQLAlchemy's async bridge
+pydantic==2.10.4
+pydantic-settings==2.7.0
+email-validator==2.2.0     # backs pydantic's EmailStr
+pillow==11.1.0
+httpx==0.28.1
+supabase==2.11.0           # admin/CLI use; request path uses httpx directly
+python-multipart==0.0.20   # UploadFile / Form parsing
+anyio==4.7.0
