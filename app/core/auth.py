@@ -12,6 +12,7 @@ Two separate JWTs are involved, and keeping them straight matters:
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import uuid
 from typing import Any
 
@@ -19,6 +20,8 @@ import jwt
 from jwt import PyJWKClient
 
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 GOOGLE_ISSUERS = {"accounts.google.com", "https://accounts.google.com"}
 GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs"
@@ -66,6 +69,8 @@ def verify_google_id_token(id_token: str) -> dict[str, Any]:
     except jwt.InvalidAudienceError as exc:
         raise AuthError("That sign-in was issued for a different application") from exc
     except jwt.PyJWTError as exc:
+        # TEMPORARY: pin down why this only fails in the deployed environment.
+        logger.exception("Google ID token verification failed: %r", exc)
         raise AuthError("Could not verify that Google sign-in") from exc
 
     if claims.get("iss") not in GOOGLE_ISSUERS:
