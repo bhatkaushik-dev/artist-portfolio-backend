@@ -131,8 +131,10 @@ async def upload_photo(
         role=meta.role,
         src=stored.webp_url,
         download_url=stored.jpeg_url,
+        thumb_url=stored.thumb_url,
         storage_path_webp=stored.webp_path,
         storage_path_jpeg=stored.jpeg_path,
+        storage_path_thumb=stored.thumb_path,
         width=stored.width,
         height=stored.height,
         alt=meta.alt,
@@ -149,7 +151,7 @@ async def upload_photo(
     except Exception:
         await session.rollback()
         # Don't leave the bucket holding assets nothing references.
-        await storage_service.delete([stored.webp_path, stored.jpeg_path])
+        await storage_service.delete(stored.paths)
         raise
     await session.refresh(photo)
     return photo
@@ -225,7 +227,7 @@ async def delete_photo(
     photo_id: uuid.UUID, session: SessionDep, tenant: TenantAdminDep
 ) -> None:
     photo = await _get_photo(session, tenant, photo_id)
-    paths = [photo.storage_path_webp, photo.storage_path_jpeg]
+    paths = photo.storage_paths
 
     # Row first: a stale object in a public bucket is harmless, whereas a row
     # whose files are gone renders as a broken image on every ISR pass.

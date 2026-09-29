@@ -14,7 +14,8 @@ from app.models.enums import PhotoRole
 
 
 class Photo(Base, UUIDPrimaryKeyMixin, TimestampMixin):
-    """One uploaded image, stored twice: WebP for display, JPEG for download.
+    """One uploaded image, stored three times: WebP for display, JPEG for
+    download, and a small WebP thumbnail for grids.
 
     ``width``/``height`` are always read off the decoded image by the upload
     pipeline — never accepted from the client — because ImageObject JSON-LD and
@@ -43,10 +44,22 @@ class Photo(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # Display asset (WebP) and original-quality asset (JPEG).
     src: Mapped[str] = mapped_column(String(512), nullable=False)
     download_url: Mapped[str] = mapped_column(String(512), nullable=False)
+    # Small WebP for grids and pickers. Nullable only for rows uploaded before
+    # thumbnails existed; migrate_photo_thumbs.py backfills them.
+    thumb_url: Mapped[str | None] = mapped_column(String(512))
 
     # Bucket-relative keys, kept so deletes can clean up storage.
     storage_path_webp: Mapped[str] = mapped_column(String(512), nullable=False)
     storage_path_jpeg: Mapped[str] = mapped_column(String(512), nullable=False)
+    storage_path_thumb: Mapped[str | None] = mapped_column(String(512))
+
+    @property
+    def storage_paths(self) -> list[str]:
+        return [
+            p
+            for p in (self.storage_path_webp, self.storage_path_jpeg, self.storage_path_thumb)
+            if p
+        ]
 
     width: Mapped[int] = mapped_column(Integer, nullable=False)
     height: Mapped[int] = mapped_column(Integer, nullable=False)

@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     IMAGE_MAX_EDGE_PX: int = 2560
     IMAGE_WEBP_QUALITY: int = 82
     IMAGE_JPEG_QUALITY: int = 90
+    # Grid/list rendition. 640px covers a ~300px cell at 2x DPR.
+    IMAGE_THUMB_EDGE_PX: int = 640
+    IMAGE_THUMB_QUALITY: int = 75
 
     # --- Lead capture ------------------------------------------------------
     WHATSAPP_PHONE: str = Field(

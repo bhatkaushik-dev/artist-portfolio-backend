@@ -4,7 +4,8 @@ Two concerns live here on purpose, because they are always used together:
 
 1. **Inspection / transcoding (Pillow).** Dimensions are read from the decoded
    image, never trusted from the client, and every upload is normalised into a
-   WebP display asset plus a high-resolution JPEG download asset.
+   WebP display asset, a high-resolution JPEG download asset, and a small WebP
+   thumbnail for grids and pickers.
 2. **Bucket I/O.** Talks to Supabase Storage's REST API over ``httpx`` so the
    whole path stays async — the official ``supabase-py`` client is synchronous
    and would block the event loop on every upload.
@@ -52,26 +53,58 @@ class ProcessedImage:
     height: int
     webp_bytes: bytes
     jpeg_bytes: bytes
+    thumb_bytes: bytes
     source_format: str
 
 
 @dataclass(slots=True)
 class StoredImage:
-    """Where the two assets landed in the bucket."""
+    """Where the three assets landed in the bucket."""
 
     webp_path: str
     jpeg_path: str
+    thumb_path: str
     webp_url: str
     jpeg_url: str
+    thumb_url: str
     webp_size: int
     jpeg_size: int
     width: int
     height: int
 
+    @property
+    def paths(self) -> list[str]:
+        return [self.webp_path, self.jpeg_path, self.thumb_path]
+
 
 # ---------------------------------------------------------------------------
 # Pillow
 # ---------------------------------------------------------------------------
+
+
+def _thumbnail_webp(img: Image.Image) -> bytes:
+    """Downscaled WebP for grids. Never upscales a small scan."""
+    thumb = img.copy()
+    edge = settings.IMAGE_THUMB_EDGE_PX
+    thumb.thumbnail((edge, edge), Image.Resampling.LANCZOS)
+    buf = io.BytesIO()
+    thumb.save(buf, format="WEBP", quality=settings.IMAGE_THUMB_QUALITY, method=6)
+    return buf.getvalue()
+
+
+def _thumbnail_from_bytes_sync(raw: bytes) -> bytes:
+    with Image.open(io.BytesIO(raw)) as img:
+        return _thumbnail_webp(img.convert("RGBA"))
+
+
+async def thumbnail_from_bytes(raw: bytes) -> bytes:
+    """Thumbnail an already-processed asset (backfilling older photos)."""
+    return await asyncio.to_thread(_thumbnail_from_bytes_sync, raw)
+
+
+def thumb_path_for(webp_path: str) -> str:
+    """``…/name-abc123.webp`` -> ``…/name-abc123.thumb.webp``."""
+    return webp_path.removesuffix(".webp") + ".thumb.webp"
 
 
 def _transcode_sync(raw: bytes) -> ProcessedImage:
@@ -125,6 +158,7 @@ def _transcode_sync(raw: bytes) -> ProcessedImage:
                 height=height,
                 webp_bytes=webp_buf.getvalue(),
                 jpeg_bytes=jpeg_buf.getvalue(),
+                thumb_bytes=_thumbnail_webp(rgba),
                 source_format=source_format,
             )
     except UnidentifiedImageError as exc:
@@ -274,10 +308,10 @@ class SupabaseStorage:
         role: str,
         alt: str,
     ) -> StoredImage:
-        """Full upload path: inspect → transcode → store both renditions.
+        """Full upload path: inspect → transcode → store all three renditions.
 
-        On a partial failure the already-uploaded rendition is cleaned up so the
-        bucket never accumulates orphans without a database row.
+        On a partial failure the already-uploaded renditions are cleaned up so
+        the bucket never accumulates orphans without a database row.
         """
         processed = await transcode(raw)
 
@@ -287,19 +321,25 @@ class SupabaseStorage:
         unique = uuid.uuid4().hex[:12]
         webp_path = f"{folder}/{stem}-{unique}.webp"
         jpeg_path = f"{folder}/{stem}-{unique}.jpg"
+        thumb_path = thumb_path_for(webp_path)
 
         webp_url = await self.upload(webp_path, processed.webp_bytes, "image/webp")
         try:
             jpeg_url = await self.upload(jpeg_path, processed.jpeg_bytes, "image/jpeg")
+            thumb_url = await self.upload(thumb_path, processed.thumb_bytes, "image/webp")
         except StorageError:
-            await self.delete([webp_path])
+            # Missing objects are ignored by delete, so this is safe whichever
+            # upload failed.
+            await self.delete([webp_path, jpeg_path, thumb_path])
             raise
 
         return StoredImage(
             webp_path=webp_path,
             jpeg_path=jpeg_path,
+            thumb_path=thumb_path,
             webp_url=webp_url,
             jpeg_url=jpeg_url,
+            thumb_url=thumb_url,
             webp_size=len(processed.webp_bytes),
             jpeg_size=len(processed.jpeg_bytes),
             width=processed.width,

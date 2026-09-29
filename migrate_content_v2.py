@@ -102,17 +102,21 @@ async def run() -> None:
         logger.info("site_profile   address.locality moved to address.city on %d row(s)", rows)
 
         # blocks/seo_keywords/noindex only have Python-side defaults, so a raw
-        # INSERT must supply them.
+        # INSERT must supply them. The casts are needed because :slug appears
+        # twice and asyncpg otherwise infers text in one place, varchar in the
+        # other, and refuses the statement.
         for slug, title in STARTER_PAGES.items():
             rows = (
                 await conn.execute(
                     text(
                         "INSERT INTO page_content "
                         "(tenant_id, slug, title, blocks, seo_keywords, noindex, is_published) "
-                        "SELECT t.id, :slug, :title, '{}'::jsonb, '[]'::jsonb, false, false "
+                        "SELECT t.id, CAST(:slug AS VARCHAR), CAST(:title AS VARCHAR), "
+                        "       '{}'::jsonb, '[]'::jsonb, false, false "
                         "FROM tenants t "
                         "WHERE NOT EXISTS (SELECT 1 FROM page_content p "
-                        "                  WHERE p.tenant_id = t.id AND p.slug = :slug)"
+                        "                  WHERE p.tenant_id = t.id "
+                        "                    AND p.slug = CAST(:slug AS VARCHAR))"
                     ),
                     {"slug": slug, "title": title},
                 )
