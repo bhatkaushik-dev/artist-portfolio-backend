@@ -13,13 +13,15 @@ app/
   db/                 Async engine, session factory, declarative base
   models/             SiteProfile, PageContent, Photo, Video, FAQ, Enquiry
   schemas/            Pydantic v2 request/response contracts
+    page_blocks.py      Per-page shapes of PageContent.blocks
   services/
     storage_service.py  Pillow inspection + WebP/JPEG transcode + bucket I/O
     enquiry_service.py  WhatsApp URL encoding + background email task
     youtube_service.py  YouTube Data API v3 metadata sync
   api/v1/             One router per resource, DI'd sessions
   main.py             App factory, CORS, GZip, lifespan
-seed.py               Idempotent seeding with realistic artist data
+seed.py               Idempotent seeding with the portfolio's real content
+migrate_*.py          One-off schema migrations (no Alembic)
 .github/workflows/    Daily Supabase keep-alive
 ```
 
@@ -38,6 +40,20 @@ uvicorn app.main:app --reload
 Interactive docs at <http://localhost:8000/docs> (disabled when
 `ENVIRONMENT=production`).
 
+### Upgrading an existing database
+
+`create_all` never alters existing tables, so schema changes ship as scripts:
+
+```bash
+python migrate_content_v2.py                   # redesign: page headers, school, image rights
+python seed.py --tenant kaushik-bhat --with-photos \
+  --assets-dir ../tabla-portfolio/public/photos/originals
+```
+
+Both are idempotent. The seed resolves page photo references by alt text, so
+running it with `--with-photos` wires the headers and story chapters to the
+uploaded photos.
+
 ## Endpoints
 
 | Method | Path | Auth | Notes |
@@ -47,8 +63,8 @@ Interactive docs at <http://localhost:8000/docs> (disabled when
 | `GET` | `/api/site` | — | Profile + schema metadata |
 | `PUT` | `/api/site` | admin | Partial update of the singleton |
 | `GET` | `/api/pages` · `/api/pages/{slug}` | — | Copy, JSONB blocks, SEO |
-| `PUT` | `/api/pages/{slug}` | admin | |
-| `GET` | `/api/photos?role=` | — | `gallery` · `hero` · `about` · `classes` |
+| `PUT` | `/api/pages/{slug}` | admin | Blocks validated per slug; photo ids must be the tenant's |
+| `GET` | `/api/photos?role=` | — | `gallery` (the public gallery) · `hero` · `about` (story scans) · `classes` |
 | `POST` | `/api/photos/upload` | admin | Multipart; dimensions derived via Pillow |
 | `PATCH` | `/api/photos/{id}/order` | admin | Returns the renumbered role bucket |
 | `PATCH` | `/api/photos/{id}` | admin | Metadata only — never dimensions |
@@ -66,6 +82,31 @@ Interactive docs at <http://localhost:8000/docs> (disabled when
 Write routes require the `X-Admin-Key: <ADMIN_API_KEY>` header.
 
 ## Design notes
+
+**Pages.** Each route the portfolio renders (`home`, `about`, `performances`,
+`gallery`, `classes`, `contact`) has one `page_content` row. `title` is the
+page's *name* (nav, breadcrumbs); the header is `eyebrow` → `heading` +
+`highlight` (the trailing words set in gold) → `intro`, beside
+`header_photo_id`. Everything else lives in `blocks`:
+
+| Slug | Blocks |
+| --- | --- |
+| `home` | `hero.tagline`, `about_band{eyebrow, heading, highlight, body, link, photo_id}` |
+| `about` | `chapters[{id, title, photo_id, caption, paragraphs[]}]`, `print_photo_id` |
+| `classes` | `formats[{icon, title, body}]`, `faq_heading`, `cta{…, primary, secondary, photo_id}` |
+| `contact` | `enquiry_types[]`, `location{heading, note}` |
+| `performances` | `channel_button_label`, `closing{heading, button_label}` |
+| `gallery` | `count_note`, `licence_note` |
+
+Known keys are validated on write (`app/schemas/page_blocks.py`); unknown keys
+pass through untouched. Text fields use two inline marks only — `**bold**` and
+`[label](/path)`. Photos are referenced by id: resolve them against
+`photos` in the bootstrap payload, and treat a missing id as "no photo".
+
+**Profile-derived copy.** The credential line ("14+ years", "B-High graded",
+the guru) comes from `site.training`; the address — including `venue` and the
+short `area` — from `site.address`; the MusicSchool entity from `site.school`;
+and the ImageObject rights fields from `site.image_*`. Pages never repeat them.
 
 **`order` vs `sort_order`.** `order` is reserved in SQL, so the column is
 `sort_order` while the JSON contract stays `order`. The aliasing lives in

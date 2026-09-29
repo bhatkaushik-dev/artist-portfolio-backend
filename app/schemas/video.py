@@ -33,7 +33,8 @@ class VideoRead(ORMModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def embed_url(self) -> str:
-        return f"https://www.youtube.com/embed/{self.youtube_id}"
+        # Privacy-enhanced mode, as the site's click-to-load player uses.
+        return f"https://www.youtube-nocookie.com/embed/{self.youtube_id}"
 
 
 class VideoCreate(BaseModel):

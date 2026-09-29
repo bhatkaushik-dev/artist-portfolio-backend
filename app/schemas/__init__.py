@@ -21,10 +21,11 @@ from app.schemas.site import (
     Award,
     Geo,
     OpeningHours,
+    School,
     SiteProfileRead,
     SiteProfileUpdate,
     SocialLink,
-    TrainingEntry,
+    TrainingSummary,
 )
 from app.schemas.video import VideoCreate, VideoRead, VideoUpdate
 
@@ -50,10 +51,11 @@ __all__ = [
     "PhotoRead",
     "PhotoUpdate",
     "PhotoUploadMeta",
+    "School",
     "SiteProfileRead",
     "SiteProfileUpdate",
     "SocialLink",
-    "TrainingEntry",
+    "TrainingSummary",
     "VideoCreate",
     "VideoRead",
     "VideoUpdate",

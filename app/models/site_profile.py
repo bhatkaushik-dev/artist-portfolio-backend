@@ -40,7 +40,9 @@ class SiteProfile(Base, TimestampMixin):
     website_url: Mapped[str | None] = mapped_column(String(512))
 
     # --- Location ----------------------------------------------------------
-    # PostalAddress shaped: {street_address, locality, region, postal_code, country}
+    # {venue, street_address, locality, area, city, region, postal_code, country}
+    # — ``locality`` is the neighbourhood ("JP Nagar 1st Phase"), ``city`` maps
+    # to PostalAddress.addressLocality.
     address: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     geo_lat: Mapped[float | None] = mapped_column(Float)
     geo_lng: Mapped[float | None] = mapped_column(Float)
@@ -49,8 +51,9 @@ class SiteProfile(Base, TimestampMixin):
     # --- Social / provenance ----------------------------------------------
     # [{platform, url, handle}] — feeds Person.sameAs
     social_links: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
-    # [{institution, teacher, gharana, years}]
-    training: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    # {start_age, years, teacher, father, grade, grading_body} — the credential
+    # line repeated across the home, about and classes pages.
+    training: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
     alternate_names: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     knows_about: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
@@ -62,9 +65,17 @@ class SiteProfile(Base, TimestampMixin):
     opening_hours: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     price_range: Mapped[str | None] = mapped_column(String(40))
     currencies_accepted: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    # The teaching practice as its own entity (MusicSchool JSON-LD):
+    # {name, alternate_name, description, image_url, offer_catalog_name, offerings[]}
+    school: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
     # --- Media -------------------------------------------------------------
+    # The four ImageObject rights fields. The two URLs may be site-relative
+    # paths ("/gallery#licence"); the frontend resolves them against its origin.
+    image_credit_text: Mapped[str | None] = mapped_column(String(160))
+    image_copyright_notice: Mapped[str | None] = mapped_column(String(200))
     image_license_url: Mapped[str | None] = mapped_column(String(512))
+    image_acquire_license_url: Mapped[str | None] = mapped_column(String(512))
     default_image_url: Mapped[str | None] = mapped_column(String(512))
     logo_url: Mapped[str | None] = mapped_column(String(512))
 

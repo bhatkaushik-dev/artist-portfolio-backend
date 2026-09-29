@@ -14,9 +14,9 @@ from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 class PageContent(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """A single routable page (``about``, ``classes``, ``contact``, ...).
 
-    ``blocks`` is deliberately schemaless JSONB: bio paragraphs, repertoire
-    lists and class levels all evolve faster than a migration cycle, and the
-    frontend validates their shape at the component boundary.
+    ``blocks`` is JSONB: story chapters, class formats and CTAs evolve faster
+    than a migration cycle. The known keys for each slug are validated on write
+    (see ``app/schemas/page_blocks.py``); anything else passes through.
     """
 
     __tablename__ = "page_content"
@@ -32,9 +32,22 @@ class PageContent(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     slug: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
 
+    # The page's name (nav label, breadcrumb) — not its on-page heading.
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     subtitle: Mapped[str | None] = mapped_column(String(320))
+
+    # --- Header ------------------------------------------------------------
+    # Every page header reads: small-caps eyebrow, then the h1 as ``heading``
+    # followed by ``highlight`` set in gold ("Tabla Classes in" + "JP Nagar").
+    eyebrow: Mapped[str | None] = mapped_column(String(120))
+    heading: Mapped[str | None] = mapped_column(String(200))
+    highlight: Mapped[str | None] = mapped_column(String(200))
     intro: Mapped[str | None] = mapped_column(Text)
+    # SET NULL so deleting a photo degrades the header rather than 500ing it.
+    header_photo_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("photos.id", ondelete="SET NULL")
+    )
+
     body: Mapped[str | None] = mapped_column(Text)
 
     blocks: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
@@ -42,6 +55,9 @@ class PageContent(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # --- SEO ---------------------------------------------------------------
     seo_title: Mapped[str | None] = mapped_column(String(200))
     seo_description: Mapped[str | None] = mapped_column(String(400))
+    # Social cards may word things differently; fall back to the seo_* pair.
+    og_title: Mapped[str | None] = mapped_column(String(200))
+    og_description: Mapped[str | None] = mapped_column(String(400))
     seo_keywords: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     canonical_path: Mapped[str | None] = mapped_column(String(255))
     og_image_url: Mapped[str | None] = mapped_column(String(512))

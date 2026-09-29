@@ -32,7 +32,16 @@ router = APIRouter(
 # uneditable over the API, so onboarding lays down the rows the artist is then
 # expected to fill in. Everything else (photos, videos, FAQs) has a real POST
 # and legitimately starts empty.
-STARTER_PAGES = ("about", "classes", "contact")
+#
+# Slug -> page name. These are the routes the portfolio renders.
+STARTER_PAGES = {
+    "home": "Home",
+    "about": "About",
+    "performances": "Performances",
+    "gallery": "Gallery",
+    "classes": "Classes",
+    "contact": "Contact",
+}
 
 
 async def _get_tenant(session: SessionDep, tenant_id: uuid.UUID) -> Tenant:
@@ -75,10 +84,10 @@ async def create_tenant(payload: TenantCreate, session: SessionDep) -> Tenant:
             PageContent(
                 tenant_id=tenant.id,
                 slug=page_slug,
-                title=page_slug.capitalize(),
+                title=page_title,
                 is_published=False,
             )
-            for page_slug in STARTER_PAGES
+            for page_slug, page_title in STARTER_PAGES.items()
         )
         await session.commit()
     except IntegrityError as exc:

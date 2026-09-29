@@ -59,7 +59,7 @@ class Video(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     @property
     def embed_url(self) -> str:
-        return f"https://www.youtube.com/embed/{self.youtube_id}"
+        return f"https://www.youtube-nocookie.com/embed/{self.youtube_id}"
 
     def __repr__(self) -> str:  # pragma: no cover - debug helper
         return f"<Video youtube_id={self.youtube_id!r}>"
