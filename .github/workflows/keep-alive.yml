@@ -28,6 +28,8 @@ concurrency:
 
 permissions:
   contents: read
+  # Needed by the "Reset inactivity timer" step below.
+  actions: write
 
 jobs:
   ping:
@@ -97,3 +99,15 @@ jobs:
           echo "### Keep-alive FAILED" >> "$GITHUB_STEP_SUMMARY"
           echo "- Endpoint: \`$HEALTH_URL\`" >> "$GITHUB_STEP_SUMMARY"
           exit 1
+
+      # GitHub auto-disables scheduled workflows after 60 days without repo
+      # activity. Re-enabling via the API resets that timer, so this workflow
+      # keeps itself alive without dummy commits.
+      - name: Reset inactivity timer
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --method PUT \
+            "repos/${{ github.repository }}/actions/workflows/keep-alive.yml/enable"
+          echo "Workflow re-enabled; 60-day inactivity timer reset."
